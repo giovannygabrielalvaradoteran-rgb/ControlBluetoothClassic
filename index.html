@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Control Bluetooth ESP32</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#1f6feb">
+  <link rel="apple-touch-icon" href="icon-192.png">
+
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #0d1117;
+      color: #c9d1d9;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    header {
+      text-align: center;
+      width: 100%;
+      max-width: 400px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      margin: 10px 0;
+      color: #f0f6fc;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 0.9rem;
+      color: #8b949e;
+      margin-bottom: 15px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background-color: #f85149;
+    }
+
+    .dot.connected {
+      background-color: #3fb950;
+    }
+
+    .btn-connect {
+      background-color: #238636;
+      color: #ffffff;
+      border: none;
+      padding: 12px 24px;
+      font-size: 1rem;
+      font-weight: bold;
+      border-radius: 8px;
+      cursor: pointer;
+      width: 100%;
+      transition: background-color 0.2s;
+    }
+
+    .btn-connect:active {
+      background-color: #2ea043;
+    }
+
+    /* Control Pad */
+    .pad-container {
+      display: grid;
+      grid-template-columns: repeat(3, 90px);
+      grid-template-rows: repeat(3, 90px);
+      gap: 12px;
+      justify-content: center;
+      align-content: center;
+      margin: auto 0;
+    }
+
+    .btn-control {
+      background-color: #21262d;
+      border: 2px solid #30363d;
+      border-radius: 16px;
+      color: #f0f6fc;
+      font-size: 1.8rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      transition: background-color 0.1s, transform 0.1s;
+    }
+
+    .btn-control:active, .btn-control.active {
+      background-color: #1f6feb;
+      border-color: #58a6ff;
+      transform: scale(0.95);
+    }
+
+    .btn-fwd { grid-column: 2; grid-row: 1; }
+    .btn-left { grid-column: 1; grid-row: 2; }
+    .btn-stop { grid-column: 2; grid-row: 2; background-color: #da3633; border-color: #f85149; }
+    .btn-stop:active { background-color: #b62324; }
+    .btn-right { grid-column: 3; grid-row: 2; }
+    .btn-back { grid-column: 2; grid-row: 3; }
+
+    footer {
+      font-size: 0.8rem;
+      color: #484f58;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Control Carro ESP32</h1>
+    <div class="status-bar">
+      <span id="status-dot" class="dot"></span>
+      <span id="status-text">Desconectado</span>
+    </div>
+    <button id="btn-connect" class="btn-connect">CONECTAR BLUETOOTH</button>
+  </header>
+
+  <!-- Pad de control -->
+  <div class="pad-container">
+    <button class="btn-control btn-fwd" data-cmd="F">▲</button>
+    <button class="btn-control btn-left" data-cmd="L">◄</button>
+    <button class="btn-control btn-stop" data-cmd="S">■</button>
+    <button class="btn-control btn-right" data-cmd="R">►</button>
+    <button class="btn-control btn-back" data-cmd="B">▼</button>
+  </div>
+
+  <footer>
+    PWA Bluetooth Web API • ESP32
+  </footer>
+
+  <script>
+    // --- Registro del Service Worker ---
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(() => console.log('Service Worker Registrado'))
+          .catch((err) => console.error('Error SW:', err));
+      });
+    }
+
+    // --- Lógica Web Bluetooth (Serial SPP) ---
+    // Servicio estándar de puerto serie Bluetooth SPP
+    const SPP_SERVICE_UUID = '00001101-0000-1000-8000-00805f9b34fb';
+    
+    let bluetoothDevice = null;
+    let sppCharacteristic = null;
+
+    const btnConnect = document.getElementById('btn-connect');
+    const statusText = document.getElementById('status-text');
+    const statusDot = document.getElementById('status-dot');
+
+    btnConnect.addEventListener('click', async () => {
+      if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+        desconectar();
+        return;
+      }
+
+      try {
+        statusText.textContent = 'Buscando...';
+        
+        // Solicitamos el dispositivo Bluetooth
+        bluetoothDevice = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: [SPP_SERVICE_UUID]
+        });
+
+        bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+        statusText.textContent = 'Conectando GATT...';
+        const server = await bluetoothDevice.gatt.connect();
+
+        statusText.textContent = 'Obteniendo servicio...';
+        const service = await server.getPrimaryService(SPP_SERVICE_UUID);
+
+        statusText.textContent = 'Obteniendo caracteristicas...';
+        const characteristics = await service.getCharacteristics();
+        sppCharacteristic = characteristics[0];
+
+        // Actualizar interfaz a conectado
+        statusText.textContent = 'Conectado a ' + bluetoothDevice.name;
+        statusDot.classList.add('connected');
+        btnConnect.textContent = 'DESCONECTAR';
+        btnConnect.style.backgroundColor = '#da3633';
+
+      } catch (error) {
+        console.error(error);
+        desconectar();
+        alert('Error al conectar: ' + error.message);
+      }
+    });
+
+    function desconectar() {
+      if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+        bluetoothDevice.gatt.disconnect();
+      }
+      onDisconnected();
+    }
+
+    function onDisconnected() {
+      statusText.textContent = 'Desconectado';
+      statusDot.classList.remove('connected');
+      btnConnect.textContent = 'CONECTAR BLUETOOTH';
+      btnConnect.style.backgroundColor = '#238636';
+      sppCharacteristic = null;
+    }
+
+    // --- Envió de comandos al ESP32 ---
+    async function enviarComando(cmd) {
+      if (!sppCharacteristic) return;
+      try {
+        const encoder = new TextEncoder();
+        await sppCharacteristic.writeValue(encoder.encode(cmd));
+      } catch (e) {
+        console.error('Error enviando comando:', e);
+      }
+    }
+
+    // --- Eventos táctiles y de ratón en los botones ---
+    const buttons = document.querySelectorAll('.btn-control');
+
+    buttons.forEach((btn) => {
+      const cmd = btn.getAttribute('data-cmd');
+
+      // Presionar botón
+      const startAction = (e) => {
+        e.preventDefault();
+        btn.classList.add('active');
+        enviarComando(cmd);
+      };
+
+      // Soltar botón (envía PARAR 'S' si no era el botón Stop)
+      const endAction = (e) => {
+        e.preventDefault();
+        btn.classList.remove('active');
+        if (cmd !== 'S') {
+          enviarComando('S');
+        }
+      };
+
+      btn.addEventListener('touchstart', startAction);
+      btn.addEventListener('touchend', endAction);
+      btn.addEventListener('mousedown', startAction);
+      btn.addEventListener('mouseup', endAction);
+    });
+  </script>
+</body>
+</html>
